@@ -1,0 +1,10 @@
+jax[cuda12-pip]
+flax
+matplotlib
+tdqm
+tensorflow
+tensorflow_datasets
+coolname
+wandb
+numpy
+albumentations
