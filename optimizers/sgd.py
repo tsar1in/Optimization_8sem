@@ -18,6 +18,8 @@ class SGD:
         self.loss_fn = jax.jit(loss_fn) if need_jit else loss_fn
         self.update_fn = jax.jit(self._make_update_fn()) if need_jit else self._make_update_fn()
 
+        self.computed_grad_count = 0
+
     def init(self, variables: dict) -> SGDState:
         return SGDState(params=FrozenDict(variables["params"]), batch_stats=FrozenDict(variables.get("batch_stats", {})))
     
@@ -32,4 +34,5 @@ class SGD:
     def update(self,
                state: SGDState,
                batch: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[float, SGDState]:
+        self.computed_grad_count += batch[0].shape[0]
         return self.update_fn(state, batch)
