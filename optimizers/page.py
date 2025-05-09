@@ -6,11 +6,10 @@ from flax.core.frozen_dict import FrozenDict
 from typing import Any, Callable, NamedTuple
 
 class PAGEState(NamedTuple):
-    g: Any
-    key: jax.random.PRNGKey
-
     params: FrozenDict
-    batch_stats: FrozenDict
+    batch_stats: FrozenDict = FrozenDict({})
+    g: Any = None
+    key: jax.random.PRNGKey = jax.random.PRNGKey(42)
 
 class PAGE:
     def __init__(self,
@@ -32,8 +31,9 @@ class PAGE:
         self._compute_partial_grad_fn = jax.jit(self._make_partial_grad_fn()) if need_jit else self._make_partial_grad_fn()
 
     def init(self, variables: dict, init_batch: tuple[jnp.ndarray, jnp.ndarray]) -> PAGEState:
-        g = self._compute_full_grad_fn(variables, init_batch)
-        return PAGEState(g=g, key=jax.random.PRNGKey(0), params=FrozenDict(variables["params"]), batch_stats=FrozenDict(variables["batch_stats"]))
+        state = PAGEState(params=FrozenDict(variables["params"]), batch_stats=FrozenDict(variables.get("batch_stats", {})))
+        _, g, _ = self._compute_full_grad_fn(state, init_batch)
+        return PAGEState(g=g, params=FrozenDict(variables["params"]), batch_stats=FrozenDict(variables.get("batch_stats", {})))
     
     def _make_full_grad_fn(self) -> Callable:
         def compute_full_grad(state: PAGEState, batch: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[float, jnp.ndarray, FrozenDict]:
@@ -48,7 +48,7 @@ class PAGE:
             (loss, new_batch_stats), new_f_grad = jax.value_and_grad(loss_fn, has_aux=True)(new_state.params)
 
             loss_fn = lambda p: self.eval_loss_fn({"params": p, "batch_stats": old_state.batch_stats}, batch)
-            old_f_grad = jax.grad(loss_fn)(old_state.params)
+            old_f_grad, _ = jax.grad(loss_fn, has_aux=True)(old_state.params)
             delta_g = jax.tree_util.tree_map(lambda new, old: new - old, new_f_grad, old_f_grad)
             return loss, delta_g, FrozenDict(new_batch_stats)
         return compute_partial_grad
@@ -57,20 +57,22 @@ class PAGE:
         def update_fn(state: PAGEState, batch: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[float, PAGEState]:
             key, subkey = jax.random.split(state.key)
             new_params = jax.tree_util.tree_map(lambda p, g: p - self.lr * g, state.params, state.g)
+            new_state = PAGEState(params=FrozenDict(new_params),
+                                  batch_stats=state.batch_stats)
 
             do_full_update = jax.random.bernoulli(subkey, p=self.p)
 
             def full_update(batch: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[jnp.ndarray, FrozenDict]:
-                return self._compute_full_grad_fn(new_params, batch)
+                return self._compute_full_grad_fn(new_state, batch)
             
-            def partial_update(batch: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[jnp.ndarray, FrozenDict]:
+            def partial_update(batch: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[float, jnp.ndarray, FrozenDict]:
                 idxs = jax.random.choice(subkey,
                                          jnp.arange(batch[0].shape[0]), 
                                          shape=(self.bs_hat,),
                                          replace=False)
                 sub_batch = (batch[0][idxs], batch[1][idxs])
-                delta_g, new_batch_stats = self._compute_partial_grad_fn(new_params, state.params, sub_batch)
-                return jax.tree_util.tree_map(lambda g, dg: g + dg, state.g, delta_g), FrozenDict(new_batch_stats)
+                loss, delta_g, new_batch_stats = self._compute_partial_grad_fn(new_state, state, sub_batch)
+                return loss, jax.tree_util.tree_map(lambda g, dg: g + dg, state.g, delta_g), FrozenDict(new_batch_stats)
             
             loss, new_g, new_batch_stats = jax.lax.cond(do_full_update,
                                                         full_update,
@@ -84,7 +86,6 @@ class PAGE:
         return update_fn
 
     def update(self,
-               params: dict,
-               batch: tuple[jnp.ndarray, jnp.ndarray],
-               state: PAGEState) -> tuple[float, tuple[dict, PAGEState]]:
-        return self.update_fn(params, batch, state)
+               state: PAGEState,
+               batch: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[float, PAGEState]:
+        return self.update_fn(state, batch)
