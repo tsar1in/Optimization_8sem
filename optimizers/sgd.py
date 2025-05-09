@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from typing import Callable, NamedTuple
 
 class SGDState(NamedTuple):
-    pass
+    batch_stats: dict
 
 class SGD:
     def __init__(self,
@@ -16,15 +16,16 @@ class SGD:
         self.update_fn = jax.jit(self._make_update_fn()) if need_jit else self._make_update_fn()
 
     def init(self, params: dict) -> SGDState:
-        return SGDState()
+        return SGDState(batch_stats=params["batch_stats"])
     
     def _make_update_fn(self) -> Callable:
         def update_fn(params: dict,
-                   batch: tuple[jnp.ndarray, jnp.ndarray],
-                   state: SGDState) -> tuple[float, tuple[dict, SGDState]]:
-            grads = jax.grad(self.loss_fn)(params, batch)
+                      batch: tuple[jnp.ndarray, jnp.ndarray],
+                      state: SGDState) -> tuple[dict, SGDState]:
+            (_, new_batch_stats), grads = jax.value_and_grad(lambda p: self.loss_fn({"params": p, "batch_stats": state.batch_stats}, 
+                                              batch), has_aux=True)(params)
             new_params = jax.tree_util.tree_map(lambda p, g: p - self.lr * g, params, grads)
-            return new_params, state
+            return new_params, SGDState(batch_stats=new_batch_stats)
         return update_fn
 
     def update(self,

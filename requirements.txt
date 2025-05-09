@@ -8,3 +8,4 @@ coolname
 wandb
 numpy
 albumentations
+flaxmodels

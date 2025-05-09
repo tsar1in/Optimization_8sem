@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 
+@jax.jit
 def tf_to_jax(batch) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Конвертирует TF-батч в JAX-совместимый формат."""
     images, labels = batch[0]._numpy(), batch[1]._numpy()
